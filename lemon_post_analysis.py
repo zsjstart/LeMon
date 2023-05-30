@@ -18,56 +18,6 @@ from matplotlib.ticker import ScalarFormatter
 from pathlib import Path
 import time
 
-
-def plot_valley_numbers():
-    fig, ax = plt.subplots(1)
-    fig.set_size_inches(15, 7.5)
-    
-    x, y = quarantined_asvalley_extraction()
-   
-    mean = sum(y)/len(y)
-    print(sum(y), mean)
-    
-    plt.plot(x, y, '-', linewidth=5, color='#ffc20a', label='Identified valleys')
-    #ax.axhline(y=mean, linewidth=2, color='blue', linestyle='--', label='BGP hijack (mean)')
-    
-    x, y = quarantined_valleys_analysis()
-    mean = sum(y)/len(y)
-    print(sum(y), mean)
-
-    plt.plot(x, y, '-', linewidth=5, color='#40b0a6',
-             label='Quarantined valleys')
-    #ax.axhline(y=mean, linewidth=2, color='red', linestyle='--', label='Confirmed hijack (mean)')
-    
-    
-    '''
-    x, y = leak_events_statistics()
-    mean = sum(y)/len(y)
-    print(mean)
-    print(len(x))
-    
-    plt.plot(x, y, '-', linewidth=5, color='red', label='Captured events')
-    #ax.axhline(y=mean, linewidth=2, color='blue', linestyle='--', label='BGP hijack (mean)')
-    '''
-    
-
-    ax.set_xticks(x[::6])
-    ax.set_xticklabels(x[::6], rotation=45)
-    
-    #ax.set_ylim(0, 80000)
-    # ax.set_xlim(0, 47)
-    # plt.xticks(np.arange(1,47,4))
-    #ax.tick_params(axis='x', labelrotation=90)
-    #ax.set_xlabel('Date', fontsize=30)
-    ax.set_ylabel('Number(#)', fontsize=30)
-    plt.legend(loc="upper right", bbox_to_anchor=(0.94, 1.0), fontsize=25)
-    
-    # plt.grid(linewidth=0.5)
-    ax.tick_params(axis='both', labelsize=30)  # which='major'
-    plt.tight_layout()
-
-    #plt.show()
-    plt.savefig('./valley_numbers.pdf', dpi=300)
     
 def leak_events_statistics():
     file_path = './HistoricalDataAnalysis/route_leaks/*'
@@ -440,7 +390,7 @@ def check_forward_hegemony_value(date, originasn, asn, u, s):
     return is_burst
   
 def lookup_local_hegemony_v3(date, originasn, asn):
-    start_time = calculate_heg_time(date-30*15*60)
+    start_time = calculate_heg_time(date-50*15*60)
     end_time = calculate_heg_time(date+1*15*60)
     af = 4
     base_url = "https://ihr.iijlab.net/ihr/api/hegemony/?"
@@ -572,6 +522,171 @@ def LeMon_post_analysis_v2():
     for f in files:
         resolve_afile(f, file_path)
         
+def sample_hegemony_values(date, originasn, asn):
+    start_time = calculate_heg_time(date-50*15*60)
+    end_time = calculate_heg_time(date)
+    # print(start_time, end_time)
+    af = 4
+    base_url = "https://ihr.iijlab.net/ihr/api/hegemony/?"
+    # &timebin__gte=%s&timebin__lte=%s&format
+    local_api = "originasn=%s&asn=%s&af=%s&timebin__gte=%s&timebin__lte=%s&format=json"
+    query_url = base_url + \
+        local_api % (originasn, asn, af, start_time, end_time)
+    # print(query_url)
+    rsp = None
+    x = 0
+    Hes = []
+    try:
+        rsp = requests.get(query_url, headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36"
+        }, timeout=10)
+    except:
+        return x, Hes
+    if rsp.status_code != 200:
+        return x, Hes
+    rsp = rsp.json()
+    if ('results' in rsp) and (len(rsp['results']) != 0):
+        results = rsp['results']
+        for res in results:
+            if end_time in res['timebin']:
+                x = float(res['hege'])
+                continue
+            he = float(res['hege'])
+            Hes.append(he)
+    return x, Hes
+
+def test_bgpmon_leaks(ty, start_time, end_time, asn):
+    report_time = start_time
+
+    y, m, d = report_time.split('T')[0].split('-')
+    hh, mm = report_time.split('T')[1].split(':')
+
+    report_timestamp = int(calculate_unix_time(
+        datetime.datetime(int(y), int(m), int(d), int(hh), int(mm))))
+
+    start_timestamp = calculate_heg_time(int(calculate_unix_time(
+        datetime.datetime(int(y), int(m), int(d), int(hh), int(mm)))))
+    y, m, d = start_timestamp.split('T')[0].split('-')
+    hh, mm = start_timestamp.split('T')[1].split(':')
+    start_timestamp = int(calculate_unix_time(
+        datetime.datetime(int(y), int(m), int(d), int(hh), int(mm))))
+
+    for timestamp in range(start_timestamp-5*3600, start_timestamp+5*3600, 60*15):
+        t = datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc)
+
+        x, Hes = sample_hegemony_values(timestamp, '0', asn)
+
+        u, s = 0.0, 0.0
+        abnormal = 'False'
+        if x == 0 and len(Hes) <= 45:  # we set 25 when the total number of samples is 30
+            abnormal = 'True'
+        if x != 0 and len(Hes) > 5:
+            data = Hes[1:]
+            u, s = compute_gaussian_paras(data)
+
+            if is_abnormal(u, s, x):
+                abnormal = 'True'
+                '''
+                is_burst = check_forward_hegemony_value(timestamp, '0', asn, u, s)
+               
+                if is_burst:
+                    abnormal = 'True'
+                '''
+        if abnormal == 'True':
+            delay = (timestamp - report_timestamp)/3600
+            if x == 0:
+                delay = 0
+            #t = datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc)
+            print(t, x, delay)
+            return delay
+
+    return None
+
+def BGPmon_measurements():
+    
+    ty = "route_leaks"
+    ofile = open('./HistoricalDataAnalysis/' + ty +
+                 '/bgpmon_leaks.verified.csv', 'w')
+    
+    with open('./HistoricalDataAnalysis/'+ty+'/BGPmon_leaks.csv') as filehandle:
+        filecontents = filehandle.readlines()
+        for i, line in enumerate(filecontents):
+            
+            line = line.strip('\n')
+            # 2022-10-27 08:34:34+00:00,100.20.30.0/24,8612+174+3320+4809+15399+37027+37063,37063
+            fields = line.split(',')
+            timestamp, attacker = fields[0], fields[-1]
+            date = timestamp.split(' ')[0]
+            st = timestamp.split(' ')[1].split(
+                ':')[0] + ':' + timestamp.split(' ')[1].split(':')[1]
+            et = str(int(timestamp.split(' ')[1].split(':')[
+                     0])+1) + ':' + timestamp.split(' ')[1].split(':')[1]
+
+            asn = int(attacker)
+            start_time = date + 'T' + st
+            end_time = date + 'T' + et
+
+            
+
+            delay = test_bgpmon_leaks(
+                ty, start_time, end_time, asn)  # test_bgpmon_events
+            if delay == None:
+                continue
+            ofile.write(line+','+str(int(delay))+'\n')
+    ofile.close()
+    
+def plot_valley_numbers():
+    
+    fig, ax = plt.subplots(1)
+    fig.set_size_inches(15, 7.5)
+    
+    x, y = quarantined_asvalley_extraction()
+   
+    mean = sum(y)/len(y)
+    print(sum(y), mean)
+    
+    plt.plot(x, y, '-', linewidth=5, color='#ffc20a', label='Identified valleys')
+    #ax.axhline(y=mean, linewidth=2, color='blue', linestyle='--', label='BGP hijack (mean)')
+    
+    x, y = quarantined_valleys_analysis()
+    mean = sum(y)/len(y)
+    print(sum(y), mean)
+
+    plt.plot(x, y, '-', linewidth=5, color='#40b0a6',
+             label='Quarantined valleys')
+    #ax.axhline(y=mean, linewidth=2, color='red', linestyle='--', label='Confirmed hijack (mean)')
+    
+    
+    '''
+    x, y = leak_events_statistics()
+    mean = sum(y)/len(y)
+    print(mean)
+    print(len(x))
+    
+    plt.plot(x, y, '-', linewidth=5, color='red', label='Captured events')
+    #ax.axhline(y=mean, linewidth=2, color='blue', linestyle='--', label='BGP hijack (mean)')
+    '''
+    
+
+    ax.set_xticks(x[::6])
+    ax.set_xticklabels(x[::6], rotation=45)
+    
+    #ax.set_ylim(0, 80000)
+    # ax.set_xlim(0, 47)
+    # plt.xticks(np.arange(1,47,4))
+    #ax.tick_params(axis='x', labelrotation=90)
+    #ax.set_xlabel('Date', fontsize=30)
+    ax.set_ylabel('Number(#)', fontsize=30)
+    plt.legend(loc="upper right", bbox_to_anchor=(0.94, 1.0), fontsize=25)
+    
+    # plt.grid(linewidth=0.5)
+    ax.tick_params(axis='both', labelsize=30)  # which='major'
+    plt.tight_layout()
+
+    #plt.show()
+    plt.savefig('./valley_numbers.pdf', dpi=300)
+    
+        
 def main():
 
     LeMon_post_analysis()
@@ -580,8 +695,10 @@ def main():
     quarantined_valleys_analysis()
     
     leak_events_statistics()
+    BGPmon_measurements()
     
     plot_valley_numbers()
+    
     
 
 if __name__ == "__main__":
